@@ -1,144 +1,92 @@
-// Client.cpp 
-
-#define _WINSOCK_DEPRECATED_NO_WARNINGS   // Disable deprecated API warnings
-#define _CRT_SECURE_NO_WARNINGS           // Disable secure function warnings
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
 
 #include <winsock2.h>
-#pragma comment(lib, "ws2_32.lib")   // Link the library of "ws2_32.lib" 
-#include <stdlib.h>
+#include <ws2tcpip.h>
 #include <stdio.h>
-#include <string.h>
+#include <thread>
+#include <iostream>
+#include <string>
 
+#pragma comment(lib, "ws2_32.lib")
 
-#define DEFAULT_PORT	50000
+#define SERVER_IP "127.0.0.1"
+#define SERVER_PORT 50000
+#define BUFFER_SIZE 1024
 
+SOCKET clientSocket;
 
-int main(int argc, char** argv) {
+void receiveMessages() {
+    char buffer[BUFFER_SIZE];
+    while (true) {
+        memset(buffer, 0, BUFFER_SIZE);
+        int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
+        if (bytesReceived <= 0) {
+            printf("Disconnected from server.\n");
+            closesocket(clientSocket);
+            WSACleanup();
+            exit(0);
+        }
 
-	char szBuff[100];
-	int msg_len;
-	//int addr_len;
-	struct sockaddr_in server_addr;
-	struct hostent* hp;
-	SOCKET connect_sock;
-	WSADATA wsaData;
+        buffer[bytesReceived] = '\0';
+        std::string msg(buffer);
 
-	const char* server_name = "localhost";
-	unsigned short	port = DEFAULT_PORT;
-	unsigned int	addr;
+        if (msg.rfind("USERLIST ", 0) == 0) {
+            std::cout << "\n[Connected users]: " << msg.substr(9) << "\n> ";
+        }
+        else {
+            std::cout << "\n" << msg << "\n> ";
+        }
+    }
+}
 
-	if (argc != 3) {
-		printf("echoscln [server name] [port number]\n");
-		WSACleanup();
-		return -1;
-	}
-	else
-	{
-		server_name = argv[1];
-		port = atoi(argv[2]);
-	}// end else
+int main() {
+    WSADATA wsaData;
+    struct sockaddr_in serverAddr;
 
-	if (WSAStartup(0x202, &wsaData) == SOCKET_ERROR)
-	{
-		// stderr: standard error are printed to the screen.
-		fprintf(stderr, "WSAStartup failed with error %d\n", WSAGetLastError());
-		//WSACleanup function terminates use of the Windows Sockets DLL. 
-		WSACleanup();
-		return -1;
-	}// end if
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        printf("WSAStartup failed.\n");
+        return -1;
+    }
 
-	if (isalpha(server_name[0]))
-		hp = gethostbyname(server_name);
-	else
-	{
-		addr = inet_addr(server_name);
-		hp = gethostbyaddr((char*)&addr, 4, AF_INET);
-	}// end else
+    clientSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (clientSocket == INVALID_SOCKET) {
+        printf("Socket creation failed.\n");
+        WSACleanup();
+        return -1;
+    }
 
-	if (hp == NULL)
-	{
-		fprintf(stderr, "Cannot resolve address: %d\n", WSAGetLastError());
-		WSACleanup();
-		return -1;
-	}// end if
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(SERVER_PORT);
+    serverAddr.sin_addr.s_addr = inet_addr(SERVER_IP);
 
-	//copy the resolved information into the sockaddr_in structure
-	memset(&server_addr, 0, sizeof(server_addr));
-	memcpy(&(server_addr.sin_addr), hp->h_addr, hp->h_length);
-	server_addr.sin_family = hp->h_addrtype;
-	server_addr.sin_port = htons(port);
+    if (connect(clientSocket, (SOCKADDR*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        printf("Connection failed.\n");
+        closesocket(clientSocket);
+        WSACleanup();
+        return -1;
+    }
 
+    std::string username;
+    std::cout << "Enter your username: ";
+    std::getline(std::cin, username);
 
-	connect_sock = socket(AF_INET, SOCK_STREAM, 0);	// TCP socket
+    // Send username to server
+    send(clientSocket, username.c_str(), username.size(), 0);
 
+    std::thread receiver(receiveMessages);
+    receiver.detach();
 
-	if (connect_sock == INVALID_SOCKET)
-	{
-		fprintf(stderr, "socket() failed with error %d\n", WSAGetLastError());
-		WSACleanup();
-		return -1;
-	}// end if
+    std::string input;
+    while (true) {
+        std::cout << "> ";
+        std::getline(std::cin, input);
+        if (input.empty()) continue;
 
-	printf("Client connecting to: %s\n", hp->h_name);
+        send(clientSocket, input.c_str(), input.length(), 0);
+    }
 
-	if (connect(connect_sock, (struct sockaddr*)&server_addr, sizeof(server_addr))
-		== SOCKET_ERROR)
-	{
-		fprintf(stderr, "connect() failed with error %d\n", WSAGetLastError());
-		WSACleanup();
-		return -1;
-	}// end if
-
-
-	while (1)
-	{
-
-		printf("input character string:\n");
-
-		//Added at Feb 14, 2025
-		if (fgets(szBuff, sizeof(szBuff), stdin) == NULL)
-			break; // EOF or error
-
-		szBuff[strcspn(szBuff, "\n")] = '\0'; //newly added at Feb 14, 2025
-		msg_len = send(connect_sock, szBuff, strlen(szBuff), 0);
-
-		if (msg_len == SOCKET_ERROR)
-		{
-			fprintf(stderr, "send() failed with error %d\n", WSAGetLastError());
-			WSACleanup();
-			return -1;
-		}// end if
-
-		if (msg_len == 0)
-		{
-			printf("server closed connection\n");
-			closesocket(connect_sock);
-			WSACleanup();
-			return -1;
-		}// end if
-
-		msg_len = recv(connect_sock, szBuff, sizeof(szBuff) - 1, 0); //newly modified at Feb 14, 2025
-
-		if (msg_len == SOCKET_ERROR)
-		{
-			fprintf(stderr, "send() failed with error %d\n", WSAGetLastError());
-			closesocket(connect_sock);
-			WSACleanup();
-			return -1;
-		}// end if
-
-		if (msg_len == 0)
-		{
-			printf("server closed connection\n");
-			closesocket(connect_sock);
-			WSACleanup();
-			return -1;
-		}// end if
-
-		szBuff[msg_len] = '\0'; //newly added at Feb 14, 2025
-		printf("Echo from the server %s.\n", szBuff);
-	}//end while loop
-
-	closesocket(connect_sock);
-	WSACleanup();
+    closesocket(clientSocket);
+    WSACleanup();
+    return 0;
 }

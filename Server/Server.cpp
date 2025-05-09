@@ -1,116 +1,183 @@
-// Server.cpp 
-
-
-#define _WINSOCK_DEPRECATED_NO_WARNINGS   // Disable deprecated API warnings
-#define _CRT_SECURE_NO_WARNINGS           // Disable secure function warnings
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
 
 #include <winsock2.h>
-#pragma comment(lib, "ws2_32.lib")   // Link the library of "ws2_32.lib" 
-#include <stdlib.h>
+#include <ws2tcpip.h>
 #include <stdio.h>
-#include <string.h>
+#include <thread>
+#include <map>
+#include <vector>
+#include <sstream>
+#include <iostream>
+#include <mutex>
 
-#define DEFAULT_PORT	50000
+#pragma comment(lib, "ws2_32.lib")
 
+#define DEFAULT_PORT 50000
+#define MAX_CLIENTS 10
+#define BUFFER_SIZE 1024
 
-int main(int argc, char** argv) {
+std::map<std::string, SOCKET> clients;                    // username -> socket
+std::map<std::string, std::vector<std::string>> groups;   // groupname -> usernames
+std::mutex clients_mutex;
 
-	char szBuff[100];
-	int msg_len;
-	int addr_len;
-	struct sockaddr_in local, client_addr;
+void broadcastUserList() {
+    std::lock_guard<std::mutex> lock(clients_mutex);
+    std::string userList = "USERLIST ";
+    for (const auto& pair : clients) {
+        userList += pair.first + " ";
+    }
 
-	SOCKET sock, msg_sock;
-	WSADATA wsaData;
+    for (const auto& pair : clients) {
+        send(pair.second, userList.c_str(), userList.size(), 0);
+    }
+}
 
-	//if (WSAStartup(0x202, &wsaData) == SOCKET_ERROR) delete at Feb 14, 2025
-	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-	{
-		// stderr: standard error are printed to the screen.
-		fprintf(stderr, "WSAStartup failed with error %d\n", WSAGetLastError());
-		//WSACleanup function terminates use of the Windows Sockets DLL. 
-		WSACleanup();
-		return -1;
-	}// end if
+void handleClient(SOCKET clientSocket) {
+    char buffer[BUFFER_SIZE];
+    std::string username;
 
-	// Fill in the address structure
-	local.sin_family = AF_INET;
-	local.sin_addr.s_addr = INADDR_ANY;
-	local.sin_port = htons(DEFAULT_PORT);
+    // Step 1: Receive username
+    int len = recv(clientSocket, buffer, BUFFER_SIZE, 0);
+    if (len <= 0) {
+        closesocket(clientSocket);
+        return;
+    }
+    buffer[len] = '\0';
+    username = buffer;
 
-	sock = socket(AF_INET, SOCK_STREAM, 0);	//TCp socket
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        clients[username] = clientSocket;
+    }
 
+    broadcastUserList();
+    printf("User %s connected.\n", username.c_str());
 
-	if (sock == INVALID_SOCKET)
-	{
-		fprintf(stderr, "socket() failed with error %d\n", WSAGetLastError());
-		WSACleanup();
-		return -1;
-	}// end if
+    while (true) {
+        memset(buffer, 0, sizeof(buffer));
+        int recv_len = recv(clientSocket, buffer, BUFFER_SIZE, 0);
+        if (recv_len <= 0) {
+            break;
+        }
 
-	if (bind(sock, (struct sockaddr*)&local, sizeof(local)) == SOCKET_ERROR)
-	{
-		fprintf(stderr, "bind() failed with error %d\n", WSAGetLastError());
-		WSACleanup();
-		return -1;
-	}// end if
+        buffer[recv_len] = '\0';
+        std::string msg(buffer);
 
-	// waiting for connections
-	if (listen(sock, 5) == SOCKET_ERROR)
-	{
-		fprintf(stderr, "listen() failed with error %d\n", WSAGetLastError());
-		WSACleanup();
-		return -1;
-	}// end if
+        // Handle commands
+        if (msg.rfind("/msg ", 0) == 0) {
+            std::istringstream ss(msg);
+            std::string cmd, targetUser, message;
+            ss >> cmd >> targetUser;
+            std::getline(ss, message);
+            message = "[Private from " + username + "]:" + message;
 
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            if (clients.find(targetUser) != clients.end()) {
+                send(clients[targetUser], message.c_str(), message.length(), 0);
+            }
 
-	printf("Waiting for connections ........\n");
+        }
+        else if (msg.rfind("/group ", 0) == 0) {
+            std::istringstream ss(msg);
+            std::string cmd, groupName, usersStr;
+            ss >> cmd >> groupName;
+            std::getline(ss, usersStr);
+            usersStr.erase(0, 1); // remove leading space
 
-	addr_len = sizeof(client_addr);
-	msg_sock = accept(sock, (struct sockaddr*)&client_addr, &addr_len);
-	if (msg_sock == INVALID_SOCKET)
-	{
-		fprintf(stderr, "accept() failed with error %d\n", WSAGetLastError());
-		WSACleanup();
-		return -1;
-	}// end if
+            std::istringstream userStream(usersStr);
+            std::string user;
+            std::vector<std::string> userList;
 
-	printf("accepted connection from %s, port %d\n",
-		inet_ntoa(client_addr.sin_addr),
-		ntohs(client_addr.sin_port));
+            while (std::getline(userStream, user, ',')) {
+                userList.push_back(user);
+            }
 
-	while (1)
-	{
-		msg_len = recv(msg_sock, szBuff, sizeof(szBuff) - 1, 0); // newly modified on Feb 14, 2025
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            groups[groupName] = userList;
 
-		if (msg_len == SOCKET_ERROR)
-		{
-			fprintf(stderr, "recv() failed with error %d\n", WSAGetLastError());
-			WSACleanup();
-			return -1;
-		}// end if
+        }
+        else if (msg.rfind("/sendgroup ", 0) == 0) {
+            std::istringstream ss(msg);
+            std::string cmd, groupName, message;
+            ss >> cmd >> groupName;
+            std::getline(ss, message);
+            message = "[Group " + groupName + " from " + username + "]:" + message;
 
-		if (msg_len == 0)
-		{
-			printf("Client closed connection\n");
-			closesocket(msg_sock);
-			return -1;
-		}// end if
-		szBuff[msg_len] = '\0'; //newly added at Feb 14, 2025
-		printf("Bytes Received: %d, message: %s from %s\n", msg_len, szBuff, inet_ntoa(client_addr.sin_addr));
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            if (groups.find(groupName) != groups.end()) {
+                for (const auto& member : groups[groupName]) {
+                    if (clients.find(member) != clients.end()) {
+                        send(clients[member], message.c_str(), message.length(), 0);
+                    }
+                }
+            }
+        }
+        else {
+            std::string echo = "[Echo] " + msg;
+            send(clientSocket, echo.c_str(), echo.length(), 0);
+        }
+    }
 
-		msg_len = send(msg_sock, szBuff, msg_len, 0); //newly modified at Feb 14, 2025
-		if (msg_len == 0)
-		{
-			printf("Client closed connection\n");
-			closesocket(msg_sock);
-			return -1;
-		}// end if
+    {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        clients.erase(username);
+    }
 
+    printf("User %s disconnected.\n", username.c_str());
+    broadcastUserList();
+    closesocket(clientSocket);
+}
 
-	}//end while loop
+int main() {
+    WSADATA wsaData;
+    SOCKET listenSocket, clientSocket;
+    struct sockaddr_in serverAddr, clientAddr;
+    int clientAddrLen = sizeof(clientAddr);
 
-	closesocket(msg_sock);
-	WSACleanup();
-	return 0;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        printf("WSAStartup failed.\n");
+        return -1;
+    }
+
+    listenSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (listenSocket == INVALID_SOCKET) {
+        printf("Socket creation failed.\n");
+        WSACleanup();
+        return -1;
+    }
+
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(DEFAULT_PORT);
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(listenSocket, (SOCKADDR*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        printf("Bind failed.\n");
+        closesocket(listenSocket);
+        WSACleanup();
+        return -1;
+    }
+
+    if (listen(listenSocket, MAX_CLIENTS) == SOCKET_ERROR) {
+        printf("Listen failed.\n");
+        closesocket(listenSocket);
+        WSACleanup();
+        return -1;
+    }
+
+    printf("Server started on port %d...\n", DEFAULT_PORT);
+
+    while (true) {
+        clientSocket = accept(listenSocket, (SOCKADDR*)&clientAddr, &clientAddrLen);
+        if (clientSocket == INVALID_SOCKET) {
+            printf("Accept failed.\n");
+            continue;
+        }
+
+        std::thread(handleClient, clientSocket).detach();  // Handle client in separate thread
+    }
+
+    closesocket(listenSocket);
+    WSACleanup();
+    return 0;
 }
