@@ -9,8 +9,9 @@
 #include <string>
 
 #pragma comment(lib, "ws2_32.lib")
+#define SERVER_IP "127.0.0.1" 
+using namespace std;
 
-#define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 50000
 #define BUFFER_SIZE 1024
 
@@ -22,20 +23,22 @@ void receiveMessages() {
         memset(buffer, 0, BUFFER_SIZE);
         int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE, 0);
         if (bytesReceived <= 0) {
-            printf("Disconnected from server.\n");
+            //clearly if user sends something and nothing is received then somethhign went wr
+            printf("Disconnected from server.\n"); 
             closesocket(clientSocket);
             WSACleanup();
             exit(0);
         }
 
         buffer[bytesReceived] = '\0';
-        std::string msg(buffer);
+        // conversion to string
+        string msg(buffer); 
 
-        if (msg.rfind("USERLIST ", 0) == 0) {
-            std::cout << "\n[Connected users]: " << msg.substr(9) << "\n> ";
+        if (msg.rfind("USERS", 0) == 0) {
+            cout << "\n[Connected users]: " << msg.substr(5) << "\n> ";
         }
         else {
-            std::cout << "\n" << msg << "\n> ";
+            cout << "\n" << msg << "\n> ";
         }
     }
 }
@@ -45,13 +48,13 @@ int main() {
     struct sockaddr_in serverAddr;
 
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        printf("WSAStartup failed.\n");
+        printf("WSAStartup failed to start.\n");
         return -1;
     }
 
     clientSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (clientSocket == INVALID_SOCKET) {
-        printf("Socket creation failed.\n");
+        printf("The sockets creation has failed.\n");
         WSACleanup();
         return -1;
     }
@@ -61,23 +64,23 @@ int main() {
     serverAddr.sin_addr.s_addr = inet_addr(SERVER_IP);
 
     if (connect(clientSocket, (SOCKADDR*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-        printf("Connection failed.\n");
+        printf("Connection has failed.\n");
         closesocket(clientSocket);
         WSACleanup();
         return -1;
     }
 
-    std::string username;
-    std::cout << "Enter your username: ";
-    std::getline(std::cin, username);
+    string username;
+    cout << "Input your username: ";
 
-    // Send username to server
+    getline(cin, username);
+
     send(clientSocket, username.c_str(), username.size(), 0);
 
-    std::thread receiver(receiveMessages);
+    thread receiver(receiveMessages);
     receiver.detach();
 
-    std::string input;
+    string input;
     while (true) {
         std::cout << "> ";
         std::getline(std::cin, input);
