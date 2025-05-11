@@ -10,33 +10,66 @@
 #include <sstream>
 #include <iostream>
 #include <mutex>
+#include <string>
 
 #pragma comment(lib, "ws2_32.lib")
 
 #define DEFAULT_PORT 50000
 #define MAX_CLIENTS 10
 #define BUFFER_SIZE 1024
-using namespace std;
 
+
+using namespace std;
+const string SHARED_KEY = "Zhuhai123";
 map<string, SOCKET> clients;                    // username -> socket
-map<string,vector<string>> groups;   // groupname -> usernames
+map<string, vector<string>> groups;   // groupname -> usernames
 mutex clients_mutex;
 
+string xorEncryptDecrypt(const string& input, const string& key) {
+    string output = input;
+    for (size_t i = 0; i < input.size(); ++i)
+        output[i] ^= key[i % key.size()];
+    return output;
+}
+
+
 void UserList() {
-    clients_mutex.lock();
-    string userList = "USERS";
-    map<string, SOCKET>::iterator client_mapper;
-    for (client_mapper = clients.begin(); client_mapper != clients.end();++client_mapper) {
-        string username = client_mapper->first;
-        userList += username + ", ";
-    }
-    for (client_mapper = clients.begin(); client_mapper != clients.end(); ++client_mapper) {
-        SOCKET clientSocket = client_mapper->second; 
-        send(clientSocket, userList.c_str(), userList.length(), 0);
+    string userList = "USERS : ";
+    string groupList = "GROUPS : ";
+    string encryptedList;
+    vector<SOCKET> socketsToSend;
+
+    {
+        lock_guard<mutex> lock(clients_mutex);
+
+        // Build user list
+        for (const auto& client : clients) {
+            userList += client.first + " ";
+            socketsToSend.push_back(client.second); // store sockets separately
+        }
+
+        // Build group list
+        for (const auto& group : groups) {
+            groupList += group.first + " ";
+        }
+
+        // Combine and encrypt
+        string combined = userList + "\n" + groupList;
+        encryptedList = xorEncryptDecrypt(combined, SHARED_KEY);
     }
 
-    clients_mutex.unlock();
+    // Send OUTSIDE the lock
+    for (SOCKET clientSocket : socketsToSend) {
+        if (clientSocket != INVALID_SOCKET) {
+            int lengthToSend = static_cast<int>(encryptedList.length());
+            send(clientSocket, encryptedList.c_str(), lengthToSend, 0);
+            ;
+        }
+    }
 }
+
+       
+
 
 void handleClient(SOCKET clientSocket) {
     char buffer[BUFFER_SIZE];
@@ -48,7 +81,9 @@ void handleClient(SOCKET clientSocket) {
         return;
     }
     buffer[len] = '\0';
-    username = buffer;
+    string encryptedUsername(buffer);
+
+    username = xorEncryptDecrypt(encryptedUsername, SHARED_KEY);
 
     {
         lock_guard<mutex> lock(clients_mutex);
@@ -66,23 +101,26 @@ void handleClient(SOCKET clientSocket) {
         }
 
         buffer[recv_len] = '\0';
-        std::string msg(buffer);
+        string encryptedMsg(buffer);
+        string msg = xorEncryptDecrypt(encryptedMsg, SHARED_KEY);
 
         // Handle commands
         if (msg.rfind("/msg ", 0) == 0) {
             istringstream ss(msg);
             string cmd, targetUser, message;
             ss >> cmd >> targetUser;
-            std::getline(ss, message);
+            getline(ss, message);
             message = "[Individual (DM) from " + username + "]:" + message;
 
             lock_guard<mutex> lock(clients_mutex);
             if (clients.find(targetUser) != clients.end()) {
-                send(clients[targetUser], message.c_str(), message.length(), 0);
+                string encryptedResponse = xorEncryptDecrypt(message, SHARED_KEY);
+                int LengthToSend = static_cast<int>(encryptedResponse.length());
+                send(clients[targetUser], encryptedResponse.c_str(), LengthToSend, 0);
             }
 
         }
-        else if (msg.rfind("/group ", 0) == 0) {
+        else if (msg.rfind("/newgroup ", 0) == 0) {
             istringstream ss(msg);
             string cmd, groupName, usersStr;
             ss >> cmd >> groupName;
@@ -96,9 +134,11 @@ void handleClient(SOCKET clientSocket) {
             while (getline(userStream, user, ',')) {
                 userList.push_back(user);
             }
-
-            lock_guard<mutex> lock(clients_mutex);
-            groups[groupName]= userList;
+           
+            
+            groups[groupName] = userList;
+            UserList();
+            
 
         }
         else if (msg.rfind("/sendgroup ", 0) == 0) {
@@ -110,21 +150,33 @@ void handleClient(SOCKET clientSocket) {
 
             lock_guard<mutex> lock(clients_mutex);
             if (groups.find(groupName) != groups.end()) {
-                vector<string>memberList = groups[groupName];
-                for (int i = 0; i < memberList.size(); ++i) {
-                    string memberName = memberList[i];
-                    // Check if the member is currently connected (present in 'clients')
-                    if (clients.find(memberName) != clients.end()) {
-                        SOCKET memberSock = clients[memberName];
-                        send(memberSock, message.c_str(), message.length(), 0);
-                    }
+                vector<string> memberList = groups[groupName];
+
+                // Checking if sender is a group member
+                bool isMember = find(memberList.begin(), memberList.end(), username) != memberList.end();
+                if (!isMember) {
+                    string error = xorEncryptDecrypt("You are not a member of this group.", SHARED_KEY);
+                    send(clientSocket, error.c_str(), error.length(), 0);
+                    return;
                 }
 
+                for (const string& memberName : memberList) {
+                    if (clients.find(memberName) != clients.end()) {
+                        SOCKET memberSock = clients[memberName];
+                        string encrypted = xorEncryptDecrypt(message, SHARED_KEY);
+                        int LengthToSend = static_cast<int>(encrypted.length());
+                        send(memberSock, encrypted.c_str(), LengthToSend, 0);
+                    }
+                }
             }
+
         }
         else {
             string echo = "[Echo] " + msg;
-            send(clientSocket, echo.c_str(), echo.length(), 0);
+            string encryptedEcho = xorEncryptDecrypt(echo, SHARED_KEY);
+            int LengthToSend = static_cast<int>(encryptedEcho.length());
+            send(clientSocket, encryptedEcho.c_str(), LengthToSend, 0);
+
         }
     }
 
@@ -183,7 +235,7 @@ int main() {
             continue;
         }
 
-        thread(handleClient, clientSocket).detach();  
+        thread(handleClient, clientSocket).detach();
     }
 
     closesocket(listenSocket);
