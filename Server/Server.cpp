@@ -25,12 +25,27 @@ map<string, SOCKET> clients;                    // username -> socket
 map<string, vector<string>> groups;   // groupname -> usernames
 mutex clients_mutex;
 
-string xorEncryptDecrypt(const string& input, const string& key) {
-    string output = input;
-    for (size_t i = 0; i < input.size(); ++i)
-        output[i] ^= key[i % key.size()];
+string xorEncryptToHex(const string& input, const string& key) {
+    string hex;
+    for (size_t i = 0; i < input.size(); ++i) {
+        char x = input[i] ^ key[i % key.size()];
+        char buffer[3];
+        sprintf(buffer, "%02x", static_cast<unsigned char>(x));
+        hex += buffer;
+    }
+    return hex;
+}
+string xorDecryptFromHex(const string& hex, const string& key) {
+    string output;
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        string byteStr = hex.substr(i, 2);
+        char byte = static_cast<char>(strtol(byteStr.c_str(), nullptr, 16));
+        char original = byte ^ key[(i / 2) % key.size()];
+        output += original;
+    }
     return output;
 }
+
 
 
 void UserList() {
@@ -42,23 +57,22 @@ void UserList() {
     {
         lock_guard<mutex> lock(clients_mutex);
 
-        // Build user list
+        // Used for loops and long method initially found easier here
         for (const auto& client : clients) {
             userList += client.first + " ";
-            socketsToSend.push_back(client.second); // store sockets separately
+            socketsToSend.push_back(client.second);
         }
 
-        // Build group list
+      
         for (const auto& group : groups) {
             groupList += group.first + " ";
         }
 
-        // Combine and encrypt
+        /// Encryption of User and Group Names
         string combined = userList + "\n" + groupList;
-        encryptedList = xorEncryptDecrypt(combined, SHARED_KEY);
+        encryptedList = xorEncryptToHex(combined, SHARED_KEY);
     }
 
-    // Send OUTSIDE the lock
     for (SOCKET clientSocket : socketsToSend) {
         if (clientSocket != INVALID_SOCKET) {
             int lengthToSend = static_cast<int>(encryptedList.length());
@@ -82,8 +96,8 @@ void handleClient(SOCKET clientSocket) {
     }
     buffer[len] = '\0';
     string encryptedUsername(buffer);
-
-    username = xorEncryptDecrypt(encryptedUsername, SHARED_KEY);
+    // decryption
+    username = xorDecryptFromHex(encryptedUsername, SHARED_KEY);
 
     {
         lock_guard<mutex> lock(clients_mutex);
@@ -102,7 +116,8 @@ void handleClient(SOCKET clientSocket) {
 
         buffer[recv_len] = '\0';
         string encryptedMsg(buffer);
-        string msg = xorEncryptDecrypt(encryptedMsg, SHARED_KEY);
+        // msg decrypt
+        string msg = xorDecryptFromHex(encryptedMsg, SHARED_KEY);
 
         // Handle commands
         if (msg.rfind("/msg ", 0) == 0) {
@@ -114,7 +129,7 @@ void handleClient(SOCKET clientSocket) {
 
             lock_guard<mutex> lock(clients_mutex);
             if (clients.find(targetUser) != clients.end()) {
-                string encryptedResponse = xorEncryptDecrypt(message, SHARED_KEY);
+                string encryptedResponse = xorEncryptToHex(message, SHARED_KEY);
                 int LengthToSend = static_cast<int>(encryptedResponse.length());
                 send(clients[targetUser], encryptedResponse.c_str(), LengthToSend, 0);
             }
@@ -155,7 +170,7 @@ void handleClient(SOCKET clientSocket) {
                 // Checking if sender is a group member
                 bool isMember = find(memberList.begin(), memberList.end(), username) != memberList.end();
                 if (!isMember) {
-                    string error = xorEncryptDecrypt("You are not a member of this group.", SHARED_KEY);
+                    string error = xorEncryptToHex("You are not a member of this group.", SHARED_KEY);
                     send(clientSocket, error.c_str(), error.length(), 0);
                     return;
                 }
@@ -163,7 +178,7 @@ void handleClient(SOCKET clientSocket) {
                 for (const string& memberName : memberList) {
                     if (clients.find(memberName) != clients.end()) {
                         SOCKET memberSock = clients[memberName];
-                        string encrypted = xorEncryptDecrypt(message, SHARED_KEY);
+                        string encrypted = xorEncryptToHex(message, SHARED_KEY);
                         int LengthToSend = static_cast<int>(encrypted.length());
                         send(memberSock, encrypted.c_str(), LengthToSend, 0);
                     }
@@ -173,7 +188,7 @@ void handleClient(SOCKET clientSocket) {
         }
         else {
             string echo = "[Echo] " + msg;
-            string encryptedEcho = xorEncryptDecrypt(echo, SHARED_KEY);
+            string encryptedEcho = xorEncryptToHex(echo, SHARED_KEY);
             int LengthToSend = static_cast<int>(encryptedEcho.length());
             send(clientSocket, encryptedEcho.c_str(), LengthToSend, 0);
 

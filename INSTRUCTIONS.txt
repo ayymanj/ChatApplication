@@ -1,0 +1,11 @@
+This project includes a C++ server and a Python GUI client that communicate using simple encrypted messages over TCP (WinSock and sockets). Follow the steps below to run it successfully.
+
+- Go to Cmd 
+- cd to the Project Directory
+- cd /x64/Debug
+- type: Server.exe
+- Next Use VSCode to open client.py in the Client-GUI folder and run the code 
+
+Ignore Client/ Folder
+
+  NOTE: The Client/ folder was part of the early development and contains a console-based client prototype. It is no longer required — the full functionality is now implemented in the GUI client (Client-GUI/client.py).
